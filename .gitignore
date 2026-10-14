@@ -13,7 +13,9 @@ wheels/
 
 # Local database and downloaded CPBL data
 # These files stay on the developer machine and are regenerated locally.
-data/
+data/*
+!data/README.md
+!data/.gitkeep
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

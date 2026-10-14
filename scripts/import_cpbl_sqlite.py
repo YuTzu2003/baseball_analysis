@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 from pathlib import Path
 
@@ -45,7 +46,14 @@ def import_standings(database: CPBLDatabase, path: Path) -> int:
 
 
 def main() -> None:
-    root = Path("data/sources/cpbl-opendata/CPBL"); database = CPBLDatabase(Path("data/cpbl.sqlite")); count = {"batting": 0, "pitching": 0}
+    parser = argparse.ArgumentParser(description="Import CPBL CSV files into a local SQLite database.")
+    parser.add_argument("--source", type=Path, default=Path("data/sources/cpbl-opendata"))
+    parser.add_argument("--database", type=Path, default=Path("data/cpbl.sqlite"))
+    args = parser.parse_args()
+
+    root = args.source / "CPBL"
+    database = CPBLDatabase(args.database)
+    count = {"batting": 0, "pitching": 0}
     for path in sorted((root / "battings").glob("*.csv")):
         season = int(path.stem); count["batting"] += import_batting(database, path, season); count["pitching"] += import_pitching(database, root / "pitchings" / path.name, season)
     count["standings"] = import_standings(database, root / "standings.csv")
