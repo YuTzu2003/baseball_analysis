@@ -1,0 +1,41 @@
+# Python caches and build output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+wheels/
+*.egg-info/
+*.tsbuildinfo
+
+# Local database and downloaded CPBL data
+# These files stay on the developer machine and are regenerated locally.
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# The small frontend fallback snapshot is source data required for builds.
+!frontend/src/data/
+!frontend/src/data/cpbl-2024.json
+
+# Node/Vite dependencies and generated files
+node_modules/
+frontend/node_modules/
+frontend/.vite/
+frontend/dist/
+frontend/src/App.vue.js
+
+# Logs, local environment, and editor settings
+*.log
+*.lock
+*.python-version
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+coverage/
