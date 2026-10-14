@@ -85,6 +85,79 @@ class CPBLDatabase:
                 FROM batting_trend JOIN pitching_trend USING (season) ORDER BY season
             """)]
 
+    def team_summaries(self, season: int) -> list[dict[str, Any]]:
+        """Return correctly weighted batting and pitching totals for each team."""
+        standings = self.rows("standings", season)
+        batting_totals: dict[str, dict[str, int]] = {}
+        pitching_totals: dict[str, dict[str, int]] = {}
+
+        for row in self.rows("batting", season):
+            total = batting_totals.setdefault(
+                row["team_id"],
+                {"ab": 0, "h": 0, "hr": 0, "rbi": 0, "bb": 0, "hbp": 0, "sf": 0, "tb": 0},
+            )
+            source = json.loads(row["raw_json"])
+            for key in ("ab", "h", "hr", "rbi", "bb"):
+                total[key] += int(row[key])
+            total["hbp"] += int(source.get("HBP", 0) or 0)
+            total["sf"] += int(source.get("SF", 0) or 0)
+            total["tb"] += int(source.get("TB", 0) or 0)
+
+        for row in self.rows("pitching", season):
+            total = pitching_totals.setdefault(
+                row["team_id"],
+                {"ip_outs": 0, "w": 0, "l": 0, "sv": 0, "so": 0, "bb": 0, "h": 0, "er": 0},
+            )
+            source = json.loads(row["raw_json"])
+            for key in ("ip_outs", "w", "l", "sv", "so", "bb", "er"):
+                total[key] += int(row[key])
+            total["h"] += int(source.get("H", 0) or 0)
+
+        def rate(numerator: int, denominator: int, digits: int) -> float | None:
+            return round(numerator / denominator, digits) if denominator else None
+
+        summaries = []
+        for club in standings:
+            batting = batting_totals.get(
+                club["team_id"],
+                {"ab": 0, "h": 0, "hr": 0, "rbi": 0, "bb": 0, "hbp": 0, "sf": 0, "tb": 0},
+            )
+            pitching = pitching_totals.get(
+                club["team_id"],
+                {"ip_outs": 0, "w": 0, "l": 0, "sv": 0, "so": 0, "bb": 0, "h": 0, "er": 0},
+            )
+            avg = rate(batting["h"], batting["ab"], 3)
+            obp = rate(
+                batting["h"] + batting["bb"] + batting["hbp"],
+                batting["ab"] + batting["bb"] + batting["hbp"] + batting["sf"],
+                3,
+            )
+            slg = rate(batting["tb"], batting["ab"], 3)
+            summaries.append(
+                {
+                    "team_id": club["team_id"],
+                    "team": club["team"],
+                    "nickname": club["nickname"],
+                    "batting": {
+                        "AVG": avg,
+                        "OBP": obp,
+                        "SLG": slg,
+                        "OPS": round(obp + slg, 3) if obp is not None and slg is not None else None,
+                        "HR": batting["hr"],
+                        "RBI": batting["rbi"],
+                    },
+                    "pitching": {
+                        "ERA": rate(pitching["er"] * 27, pitching["ip_outs"], 2),
+                        "WHIP": rate((pitching["h"] + pitching["bb"]) * 3, pitching["ip_outs"], 2),
+                        "SO": pitching["so"],
+                        "W": pitching["w"],
+                        "L": pitching["l"],
+                        "SV": pitching["sv"],
+                    },
+                }
+            )
+        return summaries
+
     def replace(self, table: str, season: int, columns: list[str], rows: list[tuple[Any, ...]]) -> None:
         self.initialize()
         marks = ", ".join("?" for _ in columns)

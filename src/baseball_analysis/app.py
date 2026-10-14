@@ -28,6 +28,12 @@ def seasons() -> list[int]: return database.seasons()
 def league_trend() -> list[dict[str, object]]: return database.league_trend()
 
 
+@app.get("/api/teams/summary")
+def team_summaries(season: int = Query(..., ge=1990)) -> list[dict[str, object]]:
+    require_season(season)
+    return database.team_summaries(season)
+
+
 @app.get("/api/{kind}")
 def rows(kind: str, season: int = Query(..., ge=1990), team_id: str | None = None) -> list[dict[str, object]]:
     table = {"batters": "batting", "pitchers": "pitching", "standings": "standings"}.get(kind)
