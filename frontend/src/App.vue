@@ -23,6 +23,7 @@ const profileKind = ref<'batters' | 'pitchers'>('batters'), profileId = ref(''),
 const selectedTeam = ref('')
 const rosterRole = ref<'batters' | 'pitchers'>('batters')
 const score = ref({ correct: 0, total: 0, strikeMiss: 0, ballMiss: 0, streak: 0 }), pitchIndex = ref(0), judgement = ref<'S' | 'B' | null>(null), pitchReady = ref(false)
+const pitchStats = ref<Record<string, { total: number; correct: number }>>({})
 const playerChartEl = ref<HTMLElement | null>(null), historyChartEl = ref<HTMLElement | null>(null), profileChartEl = ref<HTMLElement | null>(null)
 let playerChart: import('echarts').ECharts | undefined; let historyChart: import('echarts').ECharts | undefined; let profileChart: import('echarts').ECharts | undefined
 const pitches: Pitch[] = [{ x:.5,y:.46,speed:142,label:'四縫線'},{x:.12,y:.45,speed:148,label:'四縫線'},{x:.87,y:.66,speed:133,label:'變速球'},{x:.49,y:.2,speed:151,label:'四縫線'},{x:.3,y:.72,speed:126,label:'曲球'},{x:.7,y:.37,speed:145,label:'滑球'},{x:-.03,y:.52,speed:139,label:'卡特球'},{x:.54,y:.85,speed:122,label:'曲球'}]
@@ -35,6 +36,10 @@ const batters = computed(() => dataset.value.batters.filter(x => Number(x.PA) >=
 const firstPlayer = computed(() => dataset.value.batters.find(x => x.source_player_id === first.value) ?? dataset.value.batters[0])
 const secondPlayer = computed(() => dataset.value.batters.find(x => x.source_player_id === second.value) ?? dataset.value.batters[0])
 const selectedPitch = computed(() => pitches[pitchIndex.value % pitches.length])
+const pitchTypeAccuracy = computed(() => [...new Set(pitches.map(pitch => pitch.label))].map(label => {
+  const stats = pitchStats.value[label] ?? { total: 0, correct: 0 }
+  return { label, ...stats, accuracy: stats.total ? Math.round(stats.correct / stats.total * 100) : null }
+}))
 const strike = computed(() => isStrike(selectedPitch.value))
 const leaders = computed(() => [...dataset.value.batters].filter(x => Number(x.PA) >= minimum.value).sort((a,b)=>Number(b.OPS)-Number(a.OPS)).slice(0,5))
 const pitcherLeaders = computed(() => [...dataset.value.pitchers].filter(x => Number(x.IP) >= 50).sort((a,b)=>Number(a.ERA)-Number(b.ERA)).slice(0,5))
@@ -56,14 +61,72 @@ function mapPitchers(rows: Record<string,unknown>[]) { return rows.map(row => { 
 async function loadHistory() { if(!first.value) return; try { const r=await fetch(`/api/batters/player/${encodeURIComponent(first.value)}/history`); history.value=r.ok?await r.json():[] } catch { history.value=[] } }
 async function openProfile(kind: 'batters' | 'pitchers', id: string) { profileKind.value=kind; profileId.value=id; try { const r=await fetch(`/api/${kind}/player/${encodeURIComponent(id)}/history`); profileHistory.value=r.ok?await r.json():[] } catch { profileHistory.value=[] }; active.value='profile'; await nextTick(drawCharts) }
 async function loadSeason() { try { const season=selectedSeason.value; const [b,p,s]=await Promise.all([fetch(`/api/batters?season=${season}`),fetch(`/api/pitchers?season=${season}`),fetch(`/api/standings?season=${season}`)]); if(!b.ok||!p.ok||!s.ok) throw Error(); dataset.value={season,batters:mapBatters(await b.json()),pitchers:mapPitchers(await p.json()),standings:(await s.json()).map((x:Record<string,unknown>)=>({source_team_id:x.team_id,team:x.team,nickname:x.nickname,W:x.wins,L:x.losses,T:x.ties,win_pct:x.win_pct}))} as typeof snapshot; first.value=dataset.value.batters[0]?.source_player_id??''; second.value=dataset.value.batters[1]?.source_player_id??''; dataStatus.value='SQLite 本機資料庫'; await loadHistory(); await nextTick(drawCharts) } catch { dataStatus.value='使用內建快照' } }
-async function drawCharts() { const e=await import('echarts'); if(active.value==='players'&&playerChartEl.value){playerChart?.dispose();playerChart=e.init(playerChartEl.value);const d=sorted.value.slice(0,10);playerChart.setOption({grid:{left:42,right:18,top:20,bottom:55},xAxis:{type:'category',data:d.map(x=>x.name),axisLabel:{rotate:35,color:'#728078'}},yAxis:{type:'value',axisLabel:{color:'#728078'},splitLine:{lineStyle:{color:'#edf1ed'}}},tooltip:{trigger:'axis'},series:[{type:'bar',data:d.map(x=>Number(x[metric.value as keyof typeof x])),itemStyle:{color:'#1f6f54',borderRadius:[4,4,0,0]}}]})} if(active.value==='compare'&&historyChartEl.value){historyChart?.dispose();historyChart=e.init(historyChartEl.value);historyChart.setOption({grid:{left:42,right:18,top:20,bottom:36},xAxis:{type:'category',data:history.value.map(x=>String(x.season))},yAxis:{type:'value',axisLabel:{color:'#728078'},splitLine:{lineStyle:{color:'#edf1ed'}}},tooltip:{trigger:'axis'},series:[{type:'line',smooth:true,data:history.value.map(x=>x.ops),lineStyle:{color:'#1f6f54',width:3},itemStyle:{color:'#1f6f54'},areaStyle:{color:'rgba(31,111,84,.12)'}}]})} if(active.value==='profile'&&profileChartEl.value){profileChart?.dispose();profileChart=e.init(profileChartEl.value);const key=profileKind.value==='batters'?'ops':'era';profileChart.setOption({grid:{left:42,right:18,top:20,bottom:36},xAxis:{type:'category',data:profileHistory.value.map(x=>String(x.season))},yAxis:{type:'value',axisLabel:{color:'#728078'},splitLine:{lineStyle:{color:'#edf1ed'}}},tooltip:{trigger:'axis'},series:[{type:'line',smooth:true,data:profileHistory.value.map(x=>x[key]),lineStyle:{color:profileKind.value==='batters'?'#1f6f54':'#2463a3',width:3},itemStyle:{color:profileKind.value==='batters'?'#1f6f54':'#2463a3'}}]})} }
-function answer(value:'S'|'B'){if(judgement.value||!pitchReady.value)return; judgement.value=value; const right=(value==='S')===strike.value; score.value={total:score.value.total+1,correct:score.value.correct+Number(right),streak:right?score.value.streak+1:0,strikeMiss:score.value.strikeMiss+Number(!right&&strike.value),ballMiss:score.value.ballMiss+Number(!right&&!strike.value)};localStorage.setItem('cpbl-umpire-score',JSON.stringify(score.value))}
+async function drawCharts() {
+  const e = await import('echarts')
+  const ink = '#343a40'
+  const muted = '#68717c'
+  const rule = '#e5e7e9'
+  const accent = '#b67d1c'
+  if (active.value === 'players' && playerChartEl.value) {
+    playerChart?.dispose()
+    playerChart = e.init(playerChartEl.value)
+    const d = sorted.value.slice(0, 10)
+    playerChart.setOption({
+      grid: { left: 42, right: 18, top: 20, bottom: 55 },
+      xAxis: { type: 'category', data: d.map(x => x.name), axisLabel: { rotate: 35, color: muted } },
+      yAxis: { type: 'value', axisLabel: { color: muted }, splitLine: { lineStyle: { color: rule } } },
+      tooltip: { trigger: 'axis' },
+      series: [{ type: 'bar', data: d.map(x => Number(x[metric.value as keyof typeof x])), itemStyle: { color: accent } }],
+    })
+  }
+  if (active.value === 'compare' && historyChartEl.value) {
+    historyChart?.dispose()
+    historyChart = e.init(historyChartEl.value)
+    historyChart.setOption({
+      grid: { left: 42, right: 18, top: 20, bottom: 36 },
+      xAxis: { type: 'category', data: history.value.map(x => String(x.season)), axisLabel: { color: muted } },
+      yAxis: { type: 'value', axisLabel: { color: muted }, splitLine: { lineStyle: { color: rule } } },
+      tooltip: { trigger: 'axis' },
+      series: [{ type: 'line', smooth: true, data: history.value.map(x => x.ops), lineStyle: { color: accent, width: 2 }, itemStyle: { color: accent }, areaStyle: { color: 'rgba(182,125,28,.10)' } }],
+    })
+  }
+  if (active.value === 'profile' && profileChartEl.value) {
+    profileChart?.dispose()
+    profileChart = e.init(profileChartEl.value)
+    const key = profileKind.value === 'batters' ? 'ops' : 'era'
+    const color = profileKind.value === 'batters' ? accent : ink
+    profileChart.setOption({
+      grid: { left: 42, right: 18, top: 20, bottom: 36 },
+      xAxis: { type: 'category', data: profileHistory.value.map(x => String(x.season)), axisLabel: { color: muted } },
+      yAxis: { type: 'value', axisLabel: { color: muted }, splitLine: { lineStyle: { color: rule } } },
+      tooltip: { trigger: 'axis' },
+      series: [{ type: 'line', smooth: true, data: profileHistory.value.map(x => x[key]), lineStyle: { color, width: 2 }, itemStyle: { color } }],
+    })
+  }
+}
+function answer(value:'S'|'B'){
+  if(judgement.value||!pitchReady.value)return
+  judgement.value=value
+  const right=(value==='S')===strike.value
+  score.value={total:score.value.total+1,correct:score.value.correct+Number(right),streak:right?score.value.streak+1:0,strikeMiss:score.value.strikeMiss+Number(!right&&strike.value),ballMiss:score.value.ballMiss+Number(!right&&!strike.value)}
+  localStorage.setItem('cpbl-umpire-score',JSON.stringify(score.value))
+  const label=selectedPitch.value.label
+  const previous=pitchStats.value[label]??{total:0,correct:0}
+  pitchStats.value={...pitchStats.value,[label]:{total:previous.total+1,correct:previous.correct+Number(right)}}
+  localStorage.setItem('cpbl-umpire-pitch-stats',JSON.stringify(pitchStats.value))
+}
+function loadPitchStats(){
+  try {
+    const saved=JSON.parse(localStorage.getItem('cpbl-umpire-pitch-stats')??'{}') as Record<string,{total:number;correct:number}>
+    pitchStats.value=Object.fromEntries(Object.entries(saved).filter(([,stats])=>Number.isFinite(stats?.total)&&Number.isFinite(stats?.correct)&&stats.total>=0&&stats.correct>=0&&stats.correct<=stats.total))
+  } catch { pitchStats.value={} }
+}
 function nextPitch(){pitchReady.value=false;judgement.value=null;pitchIndex.value++}
 function keyboard(e:KeyboardEvent){if(active.value!=='umpire')return;if(e.key.toLowerCase()==='s')answer('S');if(e.key.toLowerCase()==='b')answer('B');if(e.key==='Enter'&&judgement.value)nextPitch()}
 function switchRole(x:'batters'|'pitchers'){role.value=x;metric.value=x==='batters'?'OPS':'ERA'}
 function openTeam(teamId: string){selectedTeam.value=teamId;rosterRole.value='batters';active.value='teams'}
 watch([active,metric,minimum,role,team],()=>nextTick(drawCharts));watch(first,()=>loadHistory().then(()=>nextTick(drawCharts)))
-onMounted(async()=>{const saved=localStorage.getItem('cpbl-umpire-score');if(saved)score.value=JSON.parse(saved);window.addEventListener('keydown',keyboard);try{const r=await fetch('/api/seasons');if(r.ok){availableSeasons.value=await r.json();selectedSeason.value=availableSeasons.value[0]??snapshot.season;await loadSeason()}}catch{dataStatus.value='使用內建快照'}nextTick(drawCharts)})
+onMounted(async()=>{const saved=localStorage.getItem('cpbl-umpire-score');if(saved)score.value=JSON.parse(saved);loadPitchStats();window.addEventListener('keydown',keyboard);try{const r=await fetch('/api/seasons');if(r.ok){availableSeasons.value=await r.json();selectedSeason.value=availableSeasons.value[0]??snapshot.season;await loadSeason()}}catch{dataStatus.value='使用內建快照'}nextTick(drawCharts)})
 onBeforeUnmount(()=>{playerChart?.dispose();historyChart?.dispose();profileChart?.dispose();window.removeEventListener('keydown',keyboard)})
 </script>
 
@@ -73,5 +136,5 @@ onBeforeUnmount(()=>{playerChart?.dispose();historyChart?.dispose();profileChart
 <section v-else-if="active==='profile'" class="page"><div class="section-title"><div><p class="eyebrow">PLAYER HISTORY</p><h1>{{profileHistory[0]?.name ?? '球員'}} 歷年趨勢</h1></div><button class="btn btn-outline-dark" @click="active='home'">返回排行榜</button></div><div class="panel chart-panel"><div class="panel-header"><h2>{{profileKind==='batters'?'OPS':'ERA'}} 年度走勢</h2><span>{{profileHistory.length}} 個球季</span></div><div ref="profileChartEl" class="chart"/></div><div v-if="profileKind==='batters'" class="panel table-responsive history-table"><table class="table"><thead><tr><th>球季</th><th>球隊</th><th>PA</th><th>AB</th><th>H</th><th>HR</th><th>RBI</th><th>BB</th><th>SO</th><th>AVG</th><th>OBP</th><th>SLG</th><th>OPS</th><th>K%</th><th>BB%</th></tr></thead><tbody><tr v-for="x in profileHistory" :key="`${x.season}-${x.team_id}`"><td>{{x.season}}</td><td>{{x.team}}</td><td>{{x.pa}}</td><td>{{x.ab}}</td><td>{{x.h}}</td><td>{{x.hr}}</td><td>{{x.rbi}}</td><td>{{x.bb}}</td><td>{{x.so}}</td><td>{{fmt(x.avg,'AVG')}}</td><td>{{fmt(x.obp,'OBP')}}</td><td>{{fmt(x.slg,'SLG')}}</td><td class="metric-good">{{fmt(x.ops,'OPS')}}</td><td>{{fmt(x.k_pct,'K_pct')}}</td><td>{{fmt(x.bb_pct,'BB_pct')}}</td></tr></tbody></table></div><div v-else class="panel table-responsive history-table"><table class="table"><thead><tr><th>球季</th><th>球隊</th><th>IP</th><th>W</th><th>L</th><th>SV</th><th>HLD</th><th>SO</th><th>BB</th><th>HR</th><th>ERA</th><th>WHIP</th><th>K/9</th><th>BB/9</th><th>HR/9</th></tr></thead><tbody><tr v-for="x in profileHistory" :key="`${x.season}-${x.team_id}`"><td>{{x.season}}</td><td>{{x.team}}</td><td>{{fmt(Number(x.ip_outs)/3,'IP')}}</td><td>{{x.w}}</td><td>{{x.l}}</td><td>{{x.sv}}</td><td>{{x.hld}}</td><td>{{x.so}}</td><td>{{x.bb}}</td><td>{{x.hr}}</td><td class="metric-good">{{fmt(x.era,'ERA')}}</td><td>{{fmt(x.whip,'WHIP')}}</td><td>{{fmt(x.k_9,'K_9')}}</td><td>{{fmt(x.bb_9,'BB_9')}}</td><td>{{fmt(x.hr_9,'HR_9')}}</td></tr></tbody></table></div></section>
 <section v-else-if="active==='compare'" class="page"><div class="section-title"><div><p class="eyebrow">PLAYER COMPARISON</p><h1>選手比較</h1></div><p>上方是同球季比較；下方僅顯示左側選手的跨季趨勢。</p></div><div class="filter-bar compare-filter"><select v-model="first" class="form-select"><option v-for="p in batters" :key="p.source_player_id" :value="p.source_player_id">{{p.name}} · {{p.team}}</option></select><select v-model="second" class="form-select"><option v-for="p in batters" :key="p.source_player_id" :value="p.source_player_id">{{p.name}} · {{p.team}}</option></select></div><div class="compare-identity"><article><span>左側選手</span><strong>{{firstPlayer?.name}}</strong><small>{{firstPlayer?.team}} · {{firstPlayer?.PA}} PA</small></article><b>VS</b><article><span>右側選手</span><strong>{{secondPlayer?.name}}</strong><small>{{secondPlayer?.team}} · {{secondPlayer?.PA}} PA</small></article></div><div class="panel table-responsive"><table class="table compare-table"><thead><tr><th>指標</th><th>{{firstPlayer?.name}}</th><th>{{secondPlayer?.name}}</th></tr></thead><tbody><tr v-for="(_,key) in battingMetrics" :key="key"><td>{{battingMetrics[String(key)]}}</td><td>{{compare(firstPlayer,String(key))}}</td><td>{{compare(secondPlayer,String(key))}}</td></tr></tbody></table></div><div class="panel chart-panel"><div class="panel-header"><h2>{{firstPlayer?.name}} 的 OPS 歷年趨勢</h2><span>{{history.length}} 個球季</span></div><div ref="historyChartEl" class="chart"/></div></section>
 <section v-else-if="active==='teams'" class="page"><div class="section-title"><div><p class="eyebrow">TEAM ROSTER</p><h1>球隊名單</h1></div><p>選擇年度與球隊後，以角色卡片瀏覽登錄選手；點擊卡片開啟完整歷年成績。</p></div><div class="team-grid"><button v-for="x in dataset.standings" :key="x.source_team_id" class="team-card team-select" :class="{selected:x.source_team_id===selectedClub?.source_team_id}" @click="openTeam(String(x.source_team_id))"><div><span>{{x.nickname||'CPBL'}}</span><h2>{{x.team}}</h2></div><strong>{{fmt(x.win_pct,'win_pct')}}</strong><p>{{x.W}} 勝 · {{x.L}} 敗 · {{x.T}} 和</p></button></div><div class="roster-title"><div><p class="eyebrow">{{selectedClub?.nickname||'CPBL'}} · {{dataset.season}} 年度</p><h2>{{selectedClub?.team}} 球員名單</h2></div><span>{{clubBatters.length}} 位打者 · {{clubPitchers.length}} 位投手</span></div><div class="roster-tabs" role="tablist"><button :class="{active:rosterRole==='batters'}" @click="rosterRole='batters'">打者</button><button :class="{active:rosterRole==='pitchers'}" @click="rosterRole='pitchers'">投手</button></div><div class="player-card-grid"><button v-for="p in rosterRows" :key="p.source_player_id" class="player-card" @click="openProfile(rosterRole,String(p.source_player_id))"><img :src="rosterRole==='batters'?'/icons/batter.svg':'/icons/pitcher.svg'" alt=""/><span class="role-label">{{rosterRole==='batters'?'打者':'投手'}}</span><strong>{{p.name}}</strong><small>{{p.team}}</small><div v-if="rosterRole==='batters'" class="card-stat"><b>{{fmt((p as Batter).OPS,'OPS')}}</b><span>OPS · {{(p as Batter).PA}} PA</span></div><div v-else class="card-stat"><b>{{fmt((p as Pitcher).ERA,'ERA')}}</b><span>ERA · {{fmt((p as Pitcher).IP,'IP')}} IP</span></div></button></div></section>
-<section v-else class="page umpire-page"><div class="section-title"><div><p class="eyebrow">3D STRIKE ZONE SIMULATOR</p><h1>鍵盤裁判</h1></div><p>先看投球飛過本壘，再按 <kbd>S</kbd> 判好球或 <kbd>B</kbd> 判壞球；作答後按 <kbd>Enter</kbd> 下一球。</p></div><div class="umpire-layout"><div class="scene-panel"><UmpireScene :pitch="selectedPitch" :revealed="Boolean(judgement)" :strike="strike" @ready="pitchReady=$event"/><div class="scene-meta"><span>{{selectedPitch.label}} · {{selectedPitch.speed}} km/h</span><span>判定平面：本壘前緣</span></div><div class="umpire-actions"><button class="btn btn-outline-light" :disabled="!!judgement||!pitchReady" @click="answer('S')">S · 好球</button><button class="btn btn-outline-light" :disabled="!!judgement||!pitchReady" @click="answer('B')">B · 壞球</button><button v-if="judgement" class="btn btn-success" @click="nextPitch">Enter · 下一球</button></div><p class="result-line" :class="judgement?((judgement==='S')===strike?'right':'wrong'):'neutral'">{{judgement?((judgement==='S')===strike?'判定正確。':'判定錯誤。')+`這球是${strike?'好球':'壞球'}。`:pitchReady?'球已進壘，請依正面落點判決。':'投球飛行中…'}}</p></div><aside class="score-panel"><p class="eyebrow">YOUR CALLS</p><h2>本輪判決</h2><dl><div><dt>題數</dt><dd>{{score.total}}</dd></div><div><dt>正確率</dt><dd>{{score.total?Math.round(score.correct/score.total*100):0}}%</dd></div><div><dt>好球判壞</dt><dd>{{score.strikeMiss}}</dd></div><div><dt>壞球判好</dt><dd>{{score.ballMiss}}</dd></div><div><dt>連續答對</dt><dd>{{score.streak}}</dd></div></dl><div class="rule-box"><strong>幾何判定</strong><p>3D 球體與回放圖使用同一落點；球體碰到好球帶就判好球。</p></div><UmpireReplay :pitch="selectedPitch" :strike="judgement ? strike : false" :revealed="Boolean(judgement)" /></aside></div></section>
+<section v-else class="page umpire-page"><div class="section-title"><div><h1>鍵盤裁判</h1></div><p>先看投球飛過本壘，再判好球判壞球；作答後按 <kbd>Enter</kbd> 下一球。</p></div><div class="umpire-layout"><div class="scene-panel"><UmpireScene :pitch="selectedPitch" :revealed="Boolean(judgement)" :strike="strike" @ready="pitchReady=$event"/><div class="scene-meta"><span>{{selectedPitch.label}} · {{selectedPitch.speed}} km/h</span><span>判定平面：本壘前緣</span></div><div class="umpire-actions"><button class="btn btn-outline-light" :disabled="!!judgement||!pitchReady" @click="answer('S')">S · 好球</button><button class="btn btn-outline-light" :disabled="!!judgement||!pitchReady" @click="answer('B')">B · 壞球</button><button v-if="judgement" class="btn btn-success" @click="nextPitch">Enter · 下一球</button></div><p class="result-line" :class="judgement?((judgement==='S')===strike?'right':'wrong'):'neutral'">{{judgement?((judgement==='S')===strike?'判定正確。':'判定錯誤。')+`這球是${strike?'好球':'壞球'}。`:pitchReady?'球已進壘，請依正面落點判決。':'投球飛行中…'}}</p></div><aside class="score-panel"><p class="eyebrow">YOUR CALLS</p><h2>本輪判決</h2><dl><div><dt>題數</dt><dd>{{score.total}}</dd></div><div><dt>正確率</dt><dd>{{score.total?Math.round(score.correct/score.total*100):0}}%</dd></div><div><dt>好球判壞</dt><dd>{{score.strikeMiss}}</dd></div><div><dt>壞球判好</dt><dd>{{score.ballMiss}}</dd></div><div><dt>連續答對</dt><dd>{{score.streak}}</dd></div></dl><div class="rule-box"><strong>幾何判定</strong><p>3D 球體與回放圖使用同一落點；球體碰到好球帶就判好球。</p></div><section class="pitch-accuracy"><div class="pitch-accuracy-heading"><strong>各球種判決率</strong><small>僅統計已作答球次</small></div><div v-for="item in pitchTypeAccuracy" :key="item.label" class="pitch-accuracy-row"><span>{{item.label}}</span><span>{{item.total}} 球</span><strong>{{item.accuracy===null?'—':`${item.accuracy}%`}}</strong></div></section><UmpireReplay :pitch="selectedPitch" :strike="judgement ? strike : false" :revealed="Boolean(judgement)" /></aside></div></section>
 </main></div></div></template>

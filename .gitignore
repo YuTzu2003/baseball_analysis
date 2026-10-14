@@ -28,14 +28,17 @@ frontend/node_modules/
 frontend/.vite/
 frontend/dist/
 frontend/src/App.vue.js
+frontend/src/**/*.js
+frontend/src/**/*.d.ts
+!frontend/src/env.d.ts
 
 # Logs, local environment, and editor settings
 *.log
-*.lock
-*.python-version
 .env
 .env.*
 !.env.example
 .vscode/
 .idea/
 coverage/
+*.lock
+*.python-version

@@ -52,11 +52,9 @@ function animate(time: number) {
   const arcY = Math.sin(flight * Math.PI) * 0.025
   const destinationX = startX + (endX - startX) * flight + breakX
   const destinationY = startY + (endY - startY) * flight + arcY
-  // Carry the pitch just past its crossing point, then leave a small neutral landing mark.
-  const pastZone = Math.max(0, (progress - 0.78) / 0.22)
-  const direction = new THREE.Vector2(endX - startX, endY - startY).normalize()
-  ball.position.set(destinationX + direction.x * pastZone * 0.22, destinationY + direction.y * pastZone * 0.22, 0.5)
-  ball.visible = progress < 0.9
+  // Stop the ball on the plate crossing point so the final call remains visible.
+  ball.position.set(destinationX, destinationY, 0.5)
+  ball.visible = true
   ball.scale.setScalar(0.19 + flight * 0.39)
   if (landingMark) {
     landingMark.position.set(endX, endY, 0.35)
