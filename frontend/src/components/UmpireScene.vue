@@ -1,20 +1,24 @@
 <script setup lang="ts">
 import * as THREE from 'three'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { platePoint, ZONE } from '../umpireGeometry'
+import { ZONE } from '../umpireGeometry'
+
+type ViewPreset = 'plate' | 'inside' | 'outside'
 
 const props = defineProps<{ pitch: { x: number; y: number; speed: number }; revealed: boolean; strike: boolean }>()
 const emit = defineEmits<{ ready: [ready: boolean] }>()
 const mount = ref<HTMLDivElement | null>(null)
-const arrived = ref(false)
 const webglUnavailable = ref(false)
-const svgX = computed(() => 20 + props.pitch.x * 200)
-const svgY = computed(() => 20 + props.pitch.y * 200)
+const viewPreset = ref<ViewPreset>('plate')
+const zoneFrame = { left: 38.5, top: 49, width: 19, height: 18 }
+const targetLeft = computed(() => zoneFrame.left + ((props.pitch.x - ZONE.left) / (ZONE.right - ZONE.left)) * zoneFrame.width)
+const targetTop = computed(() => zoneFrame.top + ((props.pitch.y - ZONE.top) / (ZONE.bottom - ZONE.top)) * zoneFrame.height)
 
 let renderer: THREE.WebGLRenderer | undefined
 let scene: THREE.Scene | undefined
-let camera: THREE.PerspectiveCamera | undefined
+let camera: THREE.OrthographicCamera | undefined
 let ball: THREE.Mesh<THREE.SphereGeometry, THREE.MeshStandardMaterial> | undefined
+let landingMark: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial> | undefined
 let frame = 0
 let startedAt = 0
 
@@ -22,29 +26,62 @@ function render() {
   if (renderer && scene && camera) renderer.render(scene, camera)
 }
 
+function applyCamera() {
+  if (!camera) return
+  // The Three.js layer uses screen coordinates so its ball lands exactly on the DOM strike zone.
+  camera.position.set(0, 0, 10)
+  camera.lookAt(0, 0, 0)
+  render()
+}
+
+function setPreset(preset: ViewPreset) {
+  viewPreset.value = preset
+  applyCamera()
+}
+
 function animate(time: number) {
   if (!ball) return
-  const progress = Math.min((time - startedAt) / 1400, 1)
-  const end = platePoint(props.pitch)
-  const curve = Math.sin(progress * Math.PI) * 0.22
-  ball.position.set(end.x * progress, 2.65 + (end.y - 2.65) * progress + curve, -8 + progress * 8)
+  const progress = Math.min((time - startedAt) / 1500, 1)
+  const flight = Math.min(progress / 0.78, 1)
+  const endX = (targetLeft.value / 100) * 2 - 1
+  const endY = 1 - (targetTop.value / 100) * 2
+  // Start around the pitcher's release point, then grow toward the plate to convey depth.
+  const startX = -0.03
+  const startY = 0.04
+  const breakX = Math.sin(flight * Math.PI) * (props.pitch.x - 0.5) * -0.18
+  const arcY = Math.sin(flight * Math.PI) * 0.025
+  const destinationX = startX + (endX - startX) * flight + breakX
+  const destinationY = startY + (endY - startY) * flight + arcY
+  // Carry the pitch just past its crossing point, then leave a small neutral landing mark.
+  const pastZone = Math.max(0, (progress - 0.78) / 0.22)
+  const direction = new THREE.Vector2(endX - startX, endY - startY).normalize()
+  ball.position.set(destinationX + direction.x * pastZone * 0.22, destinationY + direction.y * pastZone * 0.22, 0.5)
+  ball.visible = progress < 0.9
+  ball.scale.setScalar(0.19 + flight * 0.39)
+  if (landingMark) {
+    landingMark.position.set(endX, endY, 0.35)
+    landingMark.visible = progress >= 0.78
+  }
   render()
   if (progress < 1) frame = requestAnimationFrame(animate)
-  else { arrived.value = true; emit('ready', true) }
+  else emit('ready', true)
 }
 
 function restart() {
   cancelAnimationFrame(frame)
-  arrived.value = false
   emit('ready', false)
   if (!ball) {
-    // The readable front view remains usable if WebGL is disabled.
-    arrived.value = true
     emit('ready', true)
     return
   }
   ball.material.color.set('#f5f5f4')
-  ball.position.set(0, 2.65, -8)
+  ball.visible = true
+  ball.position.set(-0.03, 0.04, 0.5)
+  ball.scale.setScalar(0.19)
+  if (landingMark) {
+    landingMark.visible = false
+    landingMark.material.color.set('#111111')
+  }
   startedAt = performance.now()
   frame = requestAnimationFrame(animate)
 }
@@ -52,10 +89,9 @@ function restart() {
 function resize() {
   if (!mount.value || !renderer || !camera) return
   const width = mount.value.clientWidth
-  if (!width) return
-  const height = Math.round(width * 0.62)
+  const height = mount.value.clientHeight
+  if (!width || !height) return
   renderer.setSize(width, height, false)
-  camera.aspect = width / height
   camera.updateProjectionMatrix()
   render()
 }
@@ -64,50 +100,28 @@ function build() {
   if (!mount.value) return
   try {
     scene = new THREE.Scene()
-    scene.background = new THREE.Color('#14201c')
-    camera = new THREE.PerspectiveCamera(48, 1, 0.1, 30)
-    camera.position.set(0, 2.65, 8)
-    camera.lookAt(0, 2.65, 0)
-    renderer = new THREE.WebGLRenderer({ antialias: true })
+    scene.background = null
+    camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 20)
+    camera.position.set(0, 0, 10)
+    camera.lookAt(0, 0, 0)
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+    renderer.setClearColor(0x000000, 0)
+    renderer.domElement.style.pointerEvents = 'none'
+    renderer.domElement.setAttribute('aria-label', '主審第一視角投球模擬')
     mount.value.replaceChildren(renderer.domElement)
-
-    scene.add(new THREE.HemisphereLight('#ffffff', '#385449', 2.2))
-    const light = new THREE.DirectionalLight('#ffffff', 2)
+    scene.add(new THREE.HemisphereLight('#ffffff', '#333333', 2.1))
+    const light = new THREE.DirectionalLight('#ffffff', 2.2)
     light.position.set(-3, 6, 5)
     scene.add(light)
 
-    const top = platePoint({ x: 0.5, y: ZONE.top }).y
-    const bottom = platePoint({ x: 0.5, y: ZONE.bottom }).y
-    const left = platePoint({ x: ZONE.left, y: 0.5 }).x
-    const right = platePoint({ x: ZONE.right, y: 0.5 }).x
-    const zone = new THREE.BoxGeometry(right - left, top - bottom, 0.06)
-    const fill = new THREE.Mesh(zone, new THREE.MeshBasicMaterial({ color: '#d8f7df', transparent: true, opacity: 0.08, depthWrite: false }))
-    fill.position.set(0, (top + bottom) / 2, 0)
-    scene.add(fill)
-    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(zone), new THREE.LineBasicMaterial({ color: '#a6f3c0' }))
-    edges.position.copy(fill.position)
-    scene.add(edges)
-
-    const plate = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 1.5), new THREE.MeshStandardMaterial({ color: '#e9efe9', side: THREE.DoubleSide }))
-    plate.rotation.x = -Math.PI / 2
-    plate.position.set(0, 0.04, 0)
-    scene.add(plate)
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), new THREE.MeshStandardMaterial({ color: '#263d33', side: THREE.DoubleSide }))
-    floor.rotation.x = -Math.PI / 2
-    scene.add(floor)
-
-    const destination = platePoint(props.pitch)
-    const trail = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(0, 2.65, -8),
-      new THREE.Vector3(destination.x * 0.55, 2.65 + (destination.y - 2.65) * 0.55 + 0.2, -3.6),
-      new THREE.Vector3(destination.x, destination.y, 0),
-    ])
-    const trajectory = new THREE.Line(trail, new THREE.LineBasicMaterial({ color: '#8daea1', transparent: true, opacity: 0.55 }))
-    scene.add(trajectory)
-    ball = new THREE.Mesh(new THREE.SphereGeometry(ZONE.ballRadius * 3.2, 24, 16), new THREE.MeshStandardMaterial({ color: '#f5f5f4' }))
+    ball = new THREE.Mesh(new THREE.SphereGeometry(0.037, 24, 16), new THREE.MeshStandardMaterial({ color: '#f5f5f4' }))
     scene.add(ball)
+    landingMark = new THREE.Mesh(new THREE.CircleGeometry(0.035, 32), new THREE.MeshBasicMaterial({ color: '#111111', transparent: true, opacity: 0.58, depthWrite: false, side: THREE.DoubleSide }))
+    landingMark.visible = false
+    scene.add(landingMark)
     window.addEventListener('resize', resize)
+    setPreset('plate')
     resize()
   } catch {
     webglUnavailable.value = true
@@ -118,10 +132,9 @@ function build() {
   restart()
 }
 
-watch(() => props.pitch, () => {
-  // The scene is recreated so the trajectory also points to the next pitch.
+function disposeScene() {
   cancelAnimationFrame(frame)
-  if (scene) scene.traverse(object => {
+  scene?.traverse(object => {
     if (object instanceof THREE.Mesh || object instanceof THREE.Line || object instanceof THREE.LineSegments) {
       object.geometry.dispose()
       const materials = Array.isArray(object.material) ? object.material : [object.material]
@@ -131,40 +144,34 @@ watch(() => props.pitch, () => {
   renderer?.dispose()
   renderer = undefined
   ball = undefined
-  window.removeEventListener('resize', resize)
-  build()
-})
-watch(() => props.revealed, () => {
-  if (ball && props.revealed) ball.material.color.set(props.strike ? '#42d994' : '#ff6b7c')
-  render()
-})
+  landingMark = undefined
+}
+
+watch(() => props.pitch, () => { disposeScene(); build() })
+watch(() => props.revealed, render)
 onMounted(build)
-onBeforeUnmount(() => {
-  cancelAnimationFrame(frame)
-  window.removeEventListener('resize', resize)
-  scene?.traverse(object => {
-    if (object instanceof THREE.Mesh || object instanceof THREE.Line || object instanceof THREE.LineSegments) {
-      object.geometry.dispose()
-      const materials = Array.isArray(object.material) ? object.material : [object.material]
-      materials.forEach(material => material.dispose())
-    }
-  })
-  renderer?.dispose()
-})
+onBeforeUnmount(() => { window.removeEventListener('resize', resize); disposeScene() })
 </script>
 
 <template>
-  <div class="umpire-scene" aria-label="從捕手視角觀看的 3D 投球與好球帶"><div ref="mount" /></div>
+  <div class="umpire-scene" aria-label="主審第一視角的打者與投球模擬">
+    <div class="umpire-background" :class="`view-${viewPreset}`">
+      <img src="/images/umpire-background.png" alt="主審第一視角的棒球場與打者背景" />
+    </div>
+    <div v-if="revealed" class="pitch-markup" :class="`view-${viewPreset}`" aria-label="答案用九宮格好球帶">
+      <div class="pitch-strike-zone">
+        <i v-for="line in 2" :key="`v${line}`" class="zone-divider vertical" :style="{ left: `${line * 33.333}%` }" />
+        <i v-for="line in 2" :key="`h${line}`" class="zone-divider horizontal" :style="{ top: `${line * 33.333}%` }" />
+      </div>
+    </div>
+    <div ref="mount" class="umpire-canvas-host" aria-hidden="true" />
+    <div class="scene-view-tools" aria-label="切換觀看角度">
+      <span>視角</span>
+      <button type="button" :class="{ active: viewPreset === 'plate' }" @click="setPreset('plate')">正面</button>
+      <button type="button" :class="{ active: viewPreset === 'inside' }" @click="setPreset('inside')">內角</button>
+      <button type="button" :class="{ active: viewPreset === 'outside' }" @click="setPreset('outside')">外角</button>
+      <small>切換視角查看場景</small>
+    </div>
+  </div>
   <p v-if="webglUnavailable" class="webgl-note">此瀏覽器無法顯示 3D，仍可用下方正面落點判讀。</p>
-  <aside class="plate-reader" aria-label="本壘正面判讀">
-    <div><strong>進壘正面圖</strong><small>{{ arrived ? '球已通過好球帶，請判決' : '球正飛向本壘' }}</small></div>
-    <svg viewBox="0 0 240 260" role="img" aria-label="好球帶與球體進壘落點">
-      <rect x="46" y="66" width="148" height="112" rx="10" class="expanded-zone" />
-      <rect x="56" y="76" width="128" height="92" class="strike-zone" />
-      <path d="M102 201 H138 L132 218 L120 229 L108 218 Z" class="home-plate" />
-      <circle v-if="arrived" :cx="svgX" :cy="svgY" r="10" :class="revealed ? (strike ? 'pitch-dot strike' : 'pitch-dot ball') : 'pitch-dot pending'" />
-      <text x="120" y="250" text-anchor="middle" :class="revealed ? (strike ? 'strike-text' : 'ball-text') : 'hint-text'">{{ revealed ? (strike ? '好球' : '壞球') : arrived ? '球已進壘，按 S 或 B' : '觀察球路中…' }}</text>
-    </svg>
-    <p>白色圓點是球的實際大小；實線是好球帶，虛線含球半徑。球只要碰到帶邊即為好球。</p>
-  </aside>
 </template>
