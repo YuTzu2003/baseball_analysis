@@ -4,10 +4,18 @@ import snapshot from "./data/cpbl-2024.json";
 import MetricSpark from "./components/MetricSpark.vue";
 import UmpireScene from "./components/UmpireScene.vue";
 import UmpireReplay from "./components/UmpireReplay.vue";
+import { formatMetric as fmt, teamColor } from "./teamPresentation";
 import { isStrike } from "./umpireGeometry";
 
 type Batter = (typeof snapshot.batters)[number];
 type Pitcher = (typeof snapshot.pitchers)[number];
+type TeamSummary = {
+  team_id: string;
+  team: string;
+  nickname: string | null;
+  batting: Record<string, number | null>;
+  pitching: Record<string, number | null>;
+};
 type View = "home" | "players" | "profile" | "teams" | "umpire" | "rankings";
 type Audience = "scout" | "coach" | "analyst" | "player";
 type Pitch = { x: number; y: number; speed: number; label: string };
@@ -71,6 +79,33 @@ const profileSeasonRows = computed(() => {
 });
 const selectedTeam = ref("");
 const rosterRole = ref<"batters" | "pitchers">("batters");
+const teamSummaries = ref<TeamSummary[]>([]);
+const teamMetricGroup = ref<"batting" | "pitching">("batting");
+const teamMetric = ref("OPS");
+const teamComparisonMetrics = {
+  batting: [
+    { key: "AVG", label: "打擊率 AVG" },
+    { key: "OBP", label: "上壘率 OBP" },
+    { key: "SLG", label: "長打率 SLG" },
+    { key: "OPS", label: "整體攻擊指數 OPS" },
+    { key: "HR", label: "全壘打 HR" },
+    { key: "RBI", label: "打點 RBI" },
+  ],
+  pitching: [
+    { key: "ERA", label: "防禦率 ERA", lowerBetter: true },
+    { key: "WHIP", label: "每局被上壘率 WHIP", lowerBetter: true },
+    { key: "SO", label: "三振 SO" },
+    { key: "W", label: "勝投 W" },
+    { key: "L", label: "敗投 L", lowerBetter: true },
+    { key: "SV", label: "救援成功 SV" },
+  ],
+} as const;
+const selectedTeamMetric = computed(() =>
+  teamComparisonMetrics[teamMetricGroup.value].find((item) => item.key === teamMetric.value),
+);
+const teamMetricLowerIsBetter = computed(
+  () => Boolean(selectedTeamMetric.value && "lowerBetter" in selectedTeamMetric.value && selectedTeamMetric.value.lowerBetter),
+);
 const score = ref({
     correct: 0,
     total: 0,
@@ -83,9 +118,12 @@ const score = ref({
   pitchReady = ref(false);
 const pitchStats = ref<Record<string, { total: number; correct: number }>>({});
 const playerChartEl = ref<HTMLElement | null>(null),
-  profileChartEl = ref<HTMLElement | null>(null);
+  profileChartEl = ref<HTMLElement | null>(null),
+  teamChartEl = ref<HTMLElement | null>(null);
 let playerChart: import("echarts").ECharts | undefined;
 let profileChart: import("echarts").ECharts | undefined;
+let teamChart: import("echarts").ECharts | undefined;
+let seasonLoadRequest = 0;
 const paths: Record<Exclude<View, "profile">, string> = {
   home: "/",
   players: "/players",
@@ -251,16 +289,11 @@ const clubPitchers = computed(() =>
 const rosterRows = computed(() =>
   rosterRole.value === "batters" ? clubBatters.value : clubPitchers.value,
 );
-const fmt = (value: unknown, key: string) => {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "—";
-  if (["AVG", "OBP", "SLG", "OPS", "ISO", "win_pct"].includes(key))
-    return n.toFixed(3).replace(/^0/, "");
-  if (["ERA", "WHIP", "K_9", "BB_9", "HR_9"].includes(key)) return n.toFixed(2);
-  if (["K_pct", "BB_pct"].includes(key)) return `${n.toFixed(1)}%`;
-  return n.toLocaleString();
-};
 const initials = (value: unknown) => String(value ?? "").trim().slice(0, 2) || "CP";
+function switchTeamMetricGroup(group: "batting" | "pitching") {
+  teamMetricGroup.value = group;
+  teamMetric.value = group === "batting" ? "OPS" : "ERA";
+}
 const topBatters = (key: keyof Batter) =>
   [...dataset.value.batters]
     .filter((x) => key === "HR" || key === "RBI" || Number(x.PA) >= 100)
@@ -370,7 +403,20 @@ async function openProfile(
   if (updateUrl) navigateProfile(kind, id, metric);
   await nextTick(drawCharts);
 }
+async function loadTeamSummaries(season: number, request: number) {
+  try {
+    const response = await fetch(`/api/teams/summary?season=${season}`);
+    const summaries: TeamSummary[] = response.ok ? await response.json() : [];
+    if (request !== seasonLoadRequest) return;
+    teamSummaries.value = summaries;
+  } catch {
+    if (request !== seasonLoadRequest) return;
+    teamSummaries.value = [];
+  }
+  await nextTick(drawCharts);
+}
 async function loadSeason() {
+  const request = ++seasonLoadRequest;
   try {
     const season = selectedSeason.value;
     const [b, p, s] = await Promise.all([
@@ -379,11 +425,17 @@ async function loadSeason() {
       fetch(`/api/standings?season=${season}`),
     ]);
     if (!b.ok || !p.ok || !s.ok) throw Error();
+    const [battingRows, pitchingRows, standingRows] = await Promise.all([
+      b.json() as Promise<Record<string, unknown>[]>,
+      p.json() as Promise<Record<string, unknown>[]>,
+      s.json() as Promise<Record<string, unknown>[]>,
+    ]);
+    if (request !== seasonLoadRequest) return;
     dataset.value = {
       season,
-      batters: mapBatters(await b.json()),
-      pitchers: mapPitchers(await p.json()),
-      standings: (await s.json()).map((x: Record<string, unknown>) => ({
+      batters: mapBatters(battingRows),
+      pitchers: mapPitchers(pitchingRows),
+      standings: standingRows.map((x) => ({
         source_team_id: x.team_id,
         team: x.team,
         nickname: x.nickname,
@@ -394,9 +446,14 @@ async function loadSeason() {
       })),
     } as typeof snapshot;
     dataStatus.value = "SQLite 本機資料庫";
+    teamSummaries.value = [];
     await nextTick(drawCharts);
+    void loadTeamSummaries(season, request);
   } catch {
+    if (request !== seasonLoadRequest) return;
+    teamSummaries.value = [];
     dataStatus.value = "使用內建快照";
+    await nextTick(drawCharts);
   }
 }
 async function drawCharts() {
@@ -456,6 +513,46 @@ async function drawCharts() {
           data: profileHistory.value.map((x) => x[key]),
           lineStyle: { color, width: 2 },
           itemStyle: { color },
+        },
+      ],
+    });
+  }
+  if (active.value === "teams" && teamChartEl.value) {
+    teamChart?.dispose();
+    teamChart = e.init(teamChartEl.value);
+    const group = teamMetricGroup.value;
+    const key = teamMetric.value;
+    teamChart.setOption({
+      grid: { left: 110, right: 42, top: 18, bottom: 32 },
+      xAxis: {
+        type: "value",
+        axisLabel: { color: muted },
+        splitLine: { lineStyle: { color: rule } },
+      },
+      yAxis: {
+        type: "category",
+        data: teamSummaries.value.map((x) => x.nickname || x.team),
+        axisLabel: { color: ink, fontWeight: 700 },
+      },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        valueFormatter: (value: number) => fmt(value, key),
+      },
+      series: [
+        {
+          type: "bar",
+          barMaxWidth: 30,
+          data: teamSummaries.value.map((x) => ({
+            value: x[group][key],
+            itemStyle: { color: teamColor(x.team_id), borderRadius: [0, 4, 4, 0] },
+          })),
+          label: {
+            show: true,
+            position: "right",
+            color: ink,
+            formatter: ({ value }: { value: number }) => fmt(value, key),
+          },
         },
       ],
     });
@@ -526,7 +623,7 @@ function openTeam(teamId: string) {
   rosterRole.value = "batters";
   navigate("teams");
 }
-watch([active, metric, minimum, role, team], () => nextTick(drawCharts));
+watch([active, metric, minimum, role, team, teamMetric, teamMetricGroup, teamSummaries], () => nextTick(drawCharts));
 watch(active, (view) => {
   if (view !== "profile" && window.location.pathname !== paths[view])
     window.history.pushState({}, "", paths[view]);
@@ -555,6 +652,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   playerChart?.dispose();
   profileChart?.dispose();
+  teamChart?.dispose();
   window.removeEventListener("keydown", keyboard);
   window.removeEventListener("popstate", applyLocation);
 });
@@ -606,7 +704,7 @@ onBeforeUnmount(() => {
               <div class="briefing-standings-header"><span>球隊戰績</span><b>{{ dataset.season }}</b></div>
               <ol>
                 <li v-for="(club, index) in [...dataset.standings].sort((a, b) => Number(b.win_pct) - Number(a.win_pct))" :key="club.source_team_id">
-                  <em>{{ index + 1 }}</em><span class="team-avatar">{{ initials(club.nickname || club.team) }}</span><strong>{{ club.team }}</strong><small>{{ club.W }} 勝 {{ club.L }} 敗</small><b>{{ fmt(club.win_pct, 'win_pct') }}</b>
+                  <em>{{ index + 1 }}</em><span class="team-avatar" :style="{ backgroundColor: teamColor(String(club.source_team_id)), color: '#fff' }">{{ initials(club.nickname || club.team) }}</span><strong>{{ club.team }}</strong><small>{{ club.W }} 勝 {{ club.L }} 敗</small><b>{{ fmt(club.win_pct, 'win_pct') }}</b>
                 </li>
               </ol>
             </div>
@@ -878,12 +976,66 @@ onBeforeUnmount(() => {
         <section v-else-if="active === 'teams'" class="page">
           <div class="section-title">
             <div>
-              <p class="eyebrow">TEAM ROSTER</p>
-              <h1>球隊名單</h1>
+              <p class="eyebrow">TEAM COMPARISON</p>
+              <h1>球隊年度比較</h1>
             </div>
-            <p>
-              選擇年度與球隊後，以角色卡片瀏覽登錄選手；點擊卡片開啟完整歷年成績。
+            <p class="team-comparison-description">
+              選擇球季與指標，比較各隊整體投打表現；下方保留球隊名單與球員資料。
             </p>
+          </div>
+          <section class="panel team-comparison-panel">
+            <div class="team-comparison-toolbar">
+              <div class="roster-tabs" role="tablist" aria-label="投打數據類型">
+                <button
+                  :class="{ active: teamMetricGroup === 'batting' }"
+                  @click="switchTeamMetricGroup('batting')"
+                >
+                  打擊</button
+                ><button
+                  :class="{ active: teamMetricGroup === 'pitching' }"
+                  @click="switchTeamMetricGroup('pitching')"
+                >
+                  投球
+                </button>
+              </div>
+              <label>
+                <span>比較指標</span>
+                <select v-model="teamMetric" class="form-select">
+                  <option
+                    v-for="item in teamComparisonMetrics[teamMetricGroup]"
+                    :key="item.key"
+                    :value="item.key"
+                  >
+                    {{ item.label }}
+                  </option>
+                </select>
+              </label>
+            </div>
+            <div class="panel-header team-comparison-heading">
+              <h2>{{ selectedTeamMetric?.label }}</h2>
+              <span v-if="teamMetricLowerIsBetter" class="lower-better">數值越低表現越佳</span>
+              <span v-else>數值越高表現越佳</span>
+            </div>
+            <div v-if="teamSummaries.length" ref="teamChartEl" class="chart team-comparison-chart" />
+            <div v-else class="comparison-empty">
+              此球季尚無可比較的球隊彙整資料。
+            </div>
+            <div v-if="teamSummaries.length" class="team-comparison-values" aria-label="各隊比較數值">
+              <div v-for="row in teamSummaries" :key="row.team_id">
+                <span class="team-avatar" :style="{ backgroundColor: teamColor(row.team_id), color: '#fff' }">
+                  {{ initials(row.nickname || row.team) }}
+                </span>
+                <span>{{ row.nickname || row.team }}</span>
+                <strong>{{ fmt(row[teamMetricGroup][teamMetric], teamMetric) }}</strong>
+              </div>
+            </div>
+          </section>
+          <div class="roster-title team-roster-heading">
+            <div>
+              <p class="eyebrow">TEAM ROSTER</p>
+              <h2>球隊名單</h2>
+            </div>
+            <span>選擇球隊查看登錄選手</span>
           </div>
           <div class="team-grid">
             <button
@@ -896,7 +1048,7 @@ onBeforeUnmount(() => {
               @click="openTeam(String(x.source_team_id))"
             >
               <div>
-                <span class="team-avatar team-avatar-large">{{ initials(x.nickname || x.team) }}</span>
+                <span class="team-avatar team-avatar-large" :style="{ backgroundColor: teamColor(String(x.source_team_id)), color: '#fff' }">{{ initials(x.nickname || x.team) }}</span>
                 <span>{{ x.nickname || "CPBL" }}</span>
                 <h2>{{ x.team }}</h2>
               </div>
@@ -1171,9 +1323,57 @@ body,button,input,select,textarea{font-family:var(--ui-font);font-size:16px;line
   line-height: 1.35;
 }
 
+.team-comparison-panel { margin-bottom: 32px; }
+.section-title > .team-comparison-description { max-width: none; white-space: nowrap; }
+.team-comparison-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 320px);
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 24px;
+}
+.team-comparison-toolbar .roster-tabs { margin: 0; }
+.team-comparison-toolbar label { display: grid; gap: 6px; }
+.team-comparison-toolbar label span { color: var(--muted); font-size: 12px; font-weight: 700; }
+.team-comparison-heading { align-items: center; }
+.team-comparison-heading h2 { margin: 0; }
+.team-comparison-heading .lower-better {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--palette-amber) 20%, var(--system-paper));
+  color: var(--palette-ink) !important;
+  font-weight: 800;
+}
+.team-comparison-chart { height: 360px; }
+.team-comparison-values {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.team-comparison-values>div {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.team-comparison-values span { font-size: 13px; }
+.team-comparison-values strong { font-size: 16px; }
+.comparison-empty { padding: 52px 20px; color: var(--muted); text-align: center; }
+.team-roster-heading { margin-top: 0; }
+
 @media (max-width: 850px) {
   .side-rail button { font-size: 16px; }
   .home-briefing { grid-template-columns: 1fr; }
   .briefing-standings { border: 1px solid #BFBFBF; }
+  .team-comparison-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .team-comparison-toolbar { grid-template-columns: 1fr; }
+  .team-comparison-values { grid-template-columns: 1fr; }
 }
 </style>
