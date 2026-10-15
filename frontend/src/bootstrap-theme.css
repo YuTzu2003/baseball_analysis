@@ -552,19 +552,6 @@ select:focus-visible {
   font-size: 23px;
 }
 
-.compare-identity article {
-  border-top-color: #333a42;
-}
-
-.compare-identity article:last-child {
-  border-top-color: var(--ui-accent);
-}
-
-.compare-identity span,
-.compare-identity small {
-  color: var(--ui-muted) !important;
-}
-
 .decision-note {
   border-left: 3px solid var(--ui-accent) !important;
 }
@@ -819,8 +806,7 @@ select:focus-visible {
     margin-top: 22px;
   }
 
-  .filter-bar,
-  .compare-filter {
+  .filter-bar {
     grid-template-columns: minmax(0, 1fr);
   }
 

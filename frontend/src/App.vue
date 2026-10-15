@@ -107,33 +107,36 @@ async function openProfile(kind: 'batters' | 'pitchers', id: string) {
 }
 async function loadSeason() { try { const season=selectedSeason.value; const [b,p,s]=await Promise.all([fetch(`/api/batters?season=${season}`),fetch(`/api/pitchers?season=${season}`),fetch(`/api/standings?season=${season}`)]); if(!b.ok||!p.ok||!s.ok) throw Error(); dataset.value={season,batters:mapBatters(await b.json()),pitchers:mapPitchers(await p.json()),standings:(await s.json()).map((x:Record<string,unknown>)=>({source_team_id:x.team_id,team:x.team,nickname:x.nickname,W:x.wins,L:x.losses,T:x.ties,win_pct:x.win_pct}))} as typeof snapshot; first.value=dataset.value.batters[0]?.source_player_id??''; second.value=dataset.value.batters[1]?.source_player_id??''; dataStatus.value='SQLite 本機資料庫'; await loadHistory(); await nextTick(drawCharts) } catch { dataStatus.value='使用內建快照' } }
 async function drawCharts() {
-  const e = await import('echarts')
-  const ink = '#343a40'
-  const muted = '#68717c'
-  const rule = '#e5e7e9'
-  const accent = '#b67d1c'
-  if (active.value === 'players' && playerChartEl.value) {
-    playerChart?.dispose()
-    playerChart = e.init(playerChartEl.value)
-    const d = sorted.value.slice(0, 10)
+  const e = await import("echarts");
+  const ink = "#343a40";
+  const muted = "#68717c";
+  const rule = "#e5e7e9";
+  const accent = "#b67d1c";
+  if (active.value === "players" && playerChartEl.value) {
+    playerChart?.dispose();
+    playerChart = e.init(playerChartEl.value);
+    const d = sorted.value.slice(0, 10);
     playerChart.setOption({
       grid: { left: 42, right: 18, top: 20, bottom: 55 },
-      xAxis: { type: 'category', data: d.map(x => x.name), axisLabel: { rotate: 35, color: muted } },
-      yAxis: { type: 'value', axisLabel: { color: muted }, splitLine: { lineStyle: { color: rule } } },
-      tooltip: { trigger: 'axis' },
-      series: [{ type: 'bar', data: d.map(x => Number(x[metric.value as keyof typeof x])), itemStyle: { color: accent } }],
-    })
-  }
-  if (active.value === 'compare' && historyChartEl.value) {
-    historyChart?.dispose()
-    historyChart = e.init(historyChartEl.value)
-    historyChart.setOption({
-      grid: { left: 42, right: 18, top: 20, bottom: 36 },
-      xAxis: { type: 'category', data: history.value.map(x => String(x.season)), axisLabel: { color: muted } },
-      yAxis: { type: 'value', axisLabel: { color: muted }, splitLine: { lineStyle: { color: rule } } },
-      tooltip: { trigger: 'axis' },
-      series: [{ type: 'line', smooth: true, data: history.value.map(x => x.ops), lineStyle: { color: accent, width: 2 }, itemStyle: { color: accent }, areaStyle: { color: 'rgba(182,125,28,.10)' } }],
-    })
+      xAxis: {
+        type: "category",
+        data: d.map((x) => x.name),
+        axisLabel: { rotate: 35, color: muted },
+      },
+      yAxis: {
+        type: "value",
+        axisLabel: { color: muted },
+        splitLine: { lineStyle: { color: rule } },
+      },
+      tooltip: { trigger: "axis" },
+      series: [
+        {
+          type: "bar",
+          data: d.map((x) => Number(x[metric.value as keyof typeof x])),
+          itemStyle: { color: accent },
+        },
+      ],
+    });
   }
   if (active.value === 'profile' && profileChartEl.value) {
     profileChart?.dispose()
@@ -151,31 +154,145 @@ async function drawCharts() {
       ],
     })
   }
+  if (active.value === "teams" && teamChartEl.value) {
+    teamChart?.dispose();
+    teamChart = e.init(teamChartEl.value);
+    const group = teamMetricGroup.value;
+    const key = teamMetric.value;
+    teamChart.setOption({
+      grid: { left: 110, right: 42, top: 18, bottom: 32 },
+      xAxis: {
+        type: "value",
+        axisLabel: { color: muted },
+        splitLine: { lineStyle: { color: rule } },
+      },
+      yAxis: {
+        type: "category",
+        data: teamSummaries.value.map((x) => x.nickname || x.team),
+        axisLabel: { color: ink, fontWeight: 700 },
+      },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        valueFormatter: (value: number) => fmt(value, key),
+      },
+      series: [
+        {
+          type: "bar",
+          barMaxWidth: 30,
+          data: teamSummaries.value.map((x) => ({
+            value: x[group][key],
+            itemStyle: { color: teamColor(x.team_id), borderRadius: [0, 4, 4, 0] },
+          })),
+          label: {
+            show: true,
+            position: "right",
+            color: ink,
+            formatter: ({ value }: { value: number }) => fmt(value, key),
+          },
+        },
+      ],
+    });
+  }
 }
-function answer(value:'S'|'B'){
-  if(judgement.value||!pitchReady.value)return
-  judgement.value=value
-  const right=(value==='S')===strike.value
-  score.value={total:score.value.total+1,correct:score.value.correct+Number(right),streak:right?score.value.streak+1:0,strikeMiss:score.value.strikeMiss+Number(!right&&strike.value),ballMiss:score.value.ballMiss+Number(!right&&!strike.value)}
-  localStorage.setItem('cpbl-umpire-score',JSON.stringify(score.value))
-  const label=selectedPitch.value.label
-  const previous=pitchStats.value[label]??{total:0,correct:0}
-  pitchStats.value={...pitchStats.value,[label]:{total:previous.total+1,correct:previous.correct+Number(right)}}
-  localStorage.setItem('cpbl-umpire-pitch-stats',JSON.stringify(pitchStats.value))
+function answer(value: "S" | "B") {
+  if (judgement.value || !pitchReady.value) return;
+  judgement.value = value;
+  const right = (value === "S") === strike.value;
+  score.value = {
+    total: score.value.total + 1,
+    correct: score.value.correct + Number(right),
+    streak: right ? score.value.streak + 1 : 0,
+    strikeMiss: score.value.strikeMiss + Number(!right && strike.value),
+    ballMiss: score.value.ballMiss + Number(!right && !strike.value),
+  };
+  localStorage.setItem("cpbl-umpire-score", JSON.stringify(score.value));
+  const label = selectedPitch.value.label;
+  const previous = pitchStats.value[label] ?? { total: 0, correct: 0 };
+  pitchStats.value = {
+    ...pitchStats.value,
+    [label]: {
+      total: previous.total + 1,
+      correct: previous.correct + Number(right),
+    },
+  };
+  localStorage.setItem(
+    "cpbl-umpire-pitch-stats",
+    JSON.stringify(pitchStats.value),
+  );
 }
-function loadPitchStats(){
+function loadPitchStats() {
   try {
-    const saved=JSON.parse(localStorage.getItem('cpbl-umpire-pitch-stats')??'{}') as Record<string,{total:number;correct:number}>
-    pitchStats.value=Object.fromEntries(Object.entries(saved).filter(([,stats])=>Number.isFinite(stats?.total)&&Number.isFinite(stats?.correct)&&stats.total>=0&&stats.correct>=0&&stats.correct<=stats.total))
-  } catch { pitchStats.value={} }
+    const saved = JSON.parse(
+      localStorage.getItem("cpbl-umpire-pitch-stats") ?? "{}",
+    ) as Record<string, { total: number; correct: number }>;
+    pitchStats.value = Object.fromEntries(
+      Object.entries(saved).filter(
+        ([, stats]) =>
+          Number.isFinite(stats?.total) &&
+          Number.isFinite(stats?.correct) &&
+          stats.total >= 0 &&
+          stats.correct >= 0 &&
+          stats.correct <= stats.total,
+      ),
+    );
+  } catch {
+    pitchStats.value = {};
+  }
 }
-function nextPitch(){pitchReady.value=false;judgement.value=null;pitchIndex.value++}
-function keyboard(e:KeyboardEvent){if(active.value!=='umpire')return;if(e.key.toLowerCase()==='s')answer('S');if(e.key.toLowerCase()==='b')answer('B');if(e.key==='Enter'&&judgement.value)nextPitch()}
-function switchRole(x:'batters'|'pitchers'){role.value=x;metric.value=x==='batters'?'OPS':'ERA'}
-function openTeam(teamId: string){selectedTeam.value=teamId;rosterRole.value='batters';active.value='teams'}
-watch([active,metric,minimum,role,team],()=>nextTick(drawCharts));watch(first,()=>loadHistory().then(()=>nextTick(drawCharts)))
-onMounted(async()=>{const saved=localStorage.getItem('cpbl-umpire-score');if(saved)score.value=JSON.parse(saved);loadPitchStats();window.addEventListener('keydown',keyboard);try{const r=await fetch('/api/seasons');if(r.ok){availableSeasons.value=await r.json();selectedSeason.value=availableSeasons.value[0]??snapshot.season;await loadSeason()}}catch{dataStatus.value='使用內建快照'}nextTick(drawCharts)})
-onBeforeUnmount(()=>{playerChart?.dispose();historyChart?.dispose();profileChart?.dispose();window.removeEventListener('keydown',keyboard)})
+function nextPitch() {
+  pitchReady.value = false;
+  judgement.value = null;
+  pitchIndex.value++;
+}
+function keyboard(e: KeyboardEvent) {
+  if (active.value !== "umpire") return;
+  if (e.key.toLowerCase() === "s") answer("S");
+  if (e.key.toLowerCase() === "b") answer("B");
+  if (e.key === "Enter" && judgement.value) nextPitch();
+}
+function switchRole(x: "batters" | "pitchers") {
+  role.value = x;
+  metric.value = x === "batters" ? "OPS" : "ERA";
+}
+function openTeam(teamId: string) {
+  selectedTeam.value = teamId;
+  rosterRole.value = "batters";
+  navigate("teams");
+}
+watch([active, metric, minimum, role, team, teamMetric, teamMetricGroup, teamSummaries], () => nextTick(drawCharts));
+watch(active, (view) => {
+  if (view !== "profile" && window.location.pathname !== paths[view])
+    window.history.pushState({}, "", paths[view]);
+});
+onMounted(() => {
+  window.addEventListener("popstate", applyLocation);
+  void applyLocation();
+});
+onMounted(async () => {
+  const saved = localStorage.getItem("cpbl-umpire-score");
+  if (saved) score.value = JSON.parse(saved);
+  loadPitchStats();
+  window.addEventListener("keydown", keyboard);
+  try {
+    const r = await fetch("/api/seasons");
+    if (r.ok) {
+      availableSeasons.value = await r.json();
+      selectedSeason.value = availableSeasons.value[0] ?? snapshot.season;
+      await loadSeason();
+    }
+  } catch {
+    dataStatus.value = "使用內建快照";
+  }
+  nextTick(drawCharts);
+});
+onBeforeUnmount(() => {
+  playerChart?.dispose();
+  profileChart?.dispose();
+  teamChart?.dispose();
+  window.removeEventListener("keydown", keyboard);
+  window.removeEventListener("popstate", applyLocation);
+});
 </script>
 
 <template><div class="analysis-shell"><header class="topbar"><div><a class="brand" href="#">CPBL <span>ANALYSIS DESK</span></a><div class="season-control"><small>{{ dataStatus }}</small><select v-model.number="selectedSeason" class="form-select form-select-sm" @change="loadSeason"><option v-for="year in availableSeasons" :key="year" :value="year">{{ year }} 球季</option></select></div></div></header><div class="workbench"><aside class="side-rail"><nav><button v-for="[id,label] in views" :key="id" :class="{active:active===id}" @click="active=id">{{ label }}</button></nav><div class="rail-note"><small>資料模式</small><strong>本機 SQLite</strong><span>年度彙總資料</span></div></aside><main class="desk-main">
