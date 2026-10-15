@@ -1,7 +1,7 @@
 const currentTeamColors: Record<string, string> = {
-  ACN: "#b58d00",
+  ACN: "#f2c300",
   ADD: "#d86400",
-  AJL: "#7b2d8e",
+  AJL: "#7a1f35",
   AEO: "#005baa",
   AAA: "#d71920",
   AKP: "#247a37",
@@ -12,6 +12,14 @@ export function teamColor(teamId: string): string {
   let hash = 0;
   for (const character of teamId) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
   return `hsl(${Math.round((hash * 137.508) % 360)}, 65%, 36%)`;
+}
+
+export function teamTextColor(teamId: string): "#111" | "#fff" {
+  const color = currentTeamColors[teamId];
+  if (!color) return "#fff";
+  const channels = [1, 3, 5].map((offset) => Number.parseInt(color.slice(offset, offset + 2), 16));
+  const luminance = (0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]) / 255;
+  return luminance > 0.6 ? "#111" : "#fff";
 }
 
 export function formatMetric(value: unknown, key: string): string {
