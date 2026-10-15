@@ -23,6 +23,6 @@ npm run dev
 ```
 開啟 `http://localhost:5173`。
 
-## 資料來源
-- [CPBL Open Data（ldkrsi/cpbl-opendata）](https://github.com/ldkrsi/cpbl-opendata)：球員、球隊與賽季統計資料。
-- [野球革命 Rebas](https://www.rebas.tw/)：裁判判決模擬的功能參考。
+## 資料來源參考
+- [CPBL Open Data（ldkrsi/cpbl-opendata）](https://github.com/ldkrsi/cpbl-opendata)
+- [野球革命 Rebas](https://www.rebas.tw/)
