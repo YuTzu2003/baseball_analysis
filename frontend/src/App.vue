@@ -26,6 +26,12 @@ type TeamSummary = {
   batting: Record<string, number | null>;
   pitching: Record<string, number | null>;
 };
+type StaticSeasonData = {
+  batters: Record<string, unknown>[];
+  pitchers: Record<string, unknown>[];
+  standings: Record<string, unknown>[];
+  team_summaries: TeamSummary[];
+};
 type Audience = "scout" | "coach" | "analyst" | "player";
 type Pitch = { x: number; y: number; speed: number; label: string };
 const views: Array<[View, string]> = [
@@ -79,6 +85,8 @@ const active = ref<View>("umpire"),
 const selectedSeason = ref(snapshot.season),
   availableSeasons = ref<number[]>([snapshot.season]),
   dataStatus = ref("讀取本機資料庫");
+const staticDataMode = import.meta.env.VITE_STATIC_DATA === "true";
+let staticSeasonData: StaticSeasonData | null = null;
 const first = ref(""),
   second = ref(""),
   history = ref<Record<string, unknown>[]>([]);
@@ -109,14 +117,23 @@ const teamComparisonMetrics = {
     { key: "SV", label: "救援成功 SV" },
   ],
 } as const;
+const routePath = (path: string) => (staticDataMode ? `#${path}` : path);
+const currentRoutePath = () =>
+  staticDataMode ? window.location.hash || "#/" : window.location.pathname;
 const paths: Record<Exclude<View, "profile">, string> = {
-  home: "/",
-  players: "/players",
-  compare: "/",
-  teams: "/teams",
-  umpire: "/umpire",
+  home: routePath("/"),
+  players: routePath("/players"),
+  compare: routePath("/"),
+  teams: routePath("/teams"),
+  umpire: routePath("/umpire"),
 };
 const navigationViews = computed(() => views.filter(([id]) => id !== "compare"));
+const staticDataUrl = (path: string) => `${import.meta.env.BASE_URL}data/${path}`;
+async function loadStaticData<T>(path: string): Promise<T> {
+  const response = await fetch(staticDataUrl(path));
+  if (!response.ok) throw Error(`Unable to load static data: ${path}`);
+  return response.json() as Promise<T>;
+}
 const score = ref({
     correct: 0,
     total: 0,
@@ -469,6 +486,13 @@ function mapPitchers(rows: Record<string, unknown>[]) {
 async function loadHistory() {
   if (!first.value) return;
   try {
+    if (staticDataMode) {
+      const payload = await loadStaticData<{ history: Record<string, unknown>[] }>(
+        `players/batters/${encodeURIComponent(first.value)}.json`,
+      );
+      history.value = payload.history;
+      return;
+    }
     const r = await fetch(
       `/api/batters/player/${encodeURIComponent(first.value)}/history`,
     );
@@ -479,6 +503,10 @@ async function loadHistory() {
 }
 async function loadTeamSummaries(season: number) {
   try {
+    if (staticDataMode) {
+      teamSummaries.value = staticSeasonData?.team_summaries ?? [];
+      return;
+    }
     const response = await fetch(`/api/teams/summary?season=${season}`);
     teamSummaries.value = response.ok ? await response.json() : [];
   } catch {
@@ -490,12 +518,12 @@ async function openProfile(kind: "batters" | "pitchers", id: string) {
   profileId.value = id;
   profileMetric.value = kind === "batters" ? "OPS" : "ERA";
   try {
-    const r = await fetch(
-      `/api/${kind}/player/${encodeURIComponent(id)}/analysis`,
-    );
-    const payload = r.ok
-      ? await r.json()
-      : { history: [], league_averages: [] };
+    const payload: { history: Record<string, unknown>[]; league_averages: Record<string, unknown>[] } = staticDataMode
+      ? await loadStaticData<{ history: Record<string, unknown>[]; league_averages: Record<string, unknown>[] }>(`players/${kind}/${encodeURIComponent(id)}.json`)
+      : await (async () => {
+          const r = await fetch(`/api/${kind}/player/${encodeURIComponent(id)}/analysis`);
+          return r.ok ? r.json() : { history: [], league_averages: [] };
+        })();
     profileHistory.value = payload.history ?? [];
     profileLeague.value = payload.league_averages ?? [];
   } catch {
@@ -508,6 +536,31 @@ async function openProfile(kind: "batters" | "pitchers", id: string) {
 async function loadSeason() {
   try {
     const season = selectedSeason.value;
+    if (staticDataMode) {
+      const payload = await loadStaticData<StaticSeasonData>(`seasons/${season}.json`);
+      staticSeasonData = payload;
+      dataset.value = {
+        season,
+        batters: mapBatters(payload.batters),
+        pitchers: mapPitchers(payload.pitchers),
+        standings: payload.standings.map((x) => ({
+          source_team_id: x.team_id,
+          team: x.team,
+          nickname: x.nickname,
+          W: x.wins,
+          L: x.losses,
+          T: x.ties,
+          win_pct: x.win_pct,
+        })),
+      } as typeof snapshot;
+      first.value = dataset.value.batters[0]?.source_player_id ?? "";
+      second.value = dataset.value.batters[1]?.source_player_id ?? "";
+      dataStatus.value = "GitHub Pages 靜態資料";
+      await loadHistory();
+      await loadTeamSummaries(season);
+      await nextTick(drawCharts);
+      return;
+    }
     const [b, p, s] = await Promise.all([
       fetch(`/api/batters?season=${season}`),
       fetch(`/api/pitchers?season=${season}`),
@@ -709,18 +762,19 @@ function navigate(view: Exclude<View, "profile">) {
 }
 async function applyLocation() {
   const view = (Object.entries(paths).find(
-    ([, path]) => path === window.location.pathname,
+    ([, path]) => path === currentRoutePath(),
   )?.[0] ?? "home") as Exclude<View, "profile">;
   active.value = view;
   await nextTick(drawCharts);
 }
 watch([active, metric, minimum, role, team, teamMetric, teamMetricGroup, teamSummaries], () => nextTick(drawCharts));
 watch(active, (view) => {
-  if (view !== "profile" && window.location.pathname !== paths[view])
+  if (view !== "profile" && currentRoutePath() !== paths[view])
     window.history.pushState({}, "", paths[view]);
 });
 onMounted(() => {
   window.addEventListener("popstate", applyLocation);
+  window.addEventListener("hashchange", applyLocation);
   void applyLocation();
 });
 onMounted(async () => {
@@ -729,6 +783,12 @@ onMounted(async () => {
   loadPitchStats();
   window.addEventListener("keydown", keyboard);
   try {
+    if (staticDataMode) {
+      availableSeasons.value = await loadStaticData<number[]>("seasons.json");
+      selectedSeason.value = availableSeasons.value[0] ?? snapshot.season;
+      await loadSeason();
+      return;
+    }
     const r = await fetch("/api/seasons");
     if (r.ok) {
       availableSeasons.value = await r.json();
@@ -746,6 +806,7 @@ onBeforeUnmount(() => {
   teamChart?.dispose();
   window.removeEventListener("keydown", keyboard);
   window.removeEventListener("popstate", applyLocation);
+  window.removeEventListener("hashchange", applyLocation);
 });
 </script>
 
