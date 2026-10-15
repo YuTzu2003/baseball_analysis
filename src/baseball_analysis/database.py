@@ -69,6 +69,31 @@ class CPBLDatabase:
         with closing(self.connect()) as connection:
             return [dict(row) for row in connection.execute(f"SELECT * FROM {table} WHERE player_id = ? ORDER BY season", (player_id,))]
 
+    def player_analysis(self, table: str, player_id: str) -> dict[str, Any]:
+        """Return a player's season rows and season-level league reference values."""
+        if table not in {"batting", "pitching"}:
+            raise ValueError("Unsupported table")
+        rows = self.player_history(table, player_id)
+        with closing(self.connect()) as connection:
+            if table == "batting":
+                query = """SELECT season,
+                    CAST(SUM(h) AS REAL) / NULLIF(SUM(ab), 0) AS avg,
+                    CAST(SUM(h + bb) AS REAL) / NULLIF(SUM(pa), 0) AS obp,
+                    CAST(SUM(CAST(json_extract(raw_json, '$.TB') AS REAL)) AS REAL) / NULLIF(SUM(ab), 0) AS slg,
+                    CAST(SUM(h + bb) AS REAL) / NULLIF(SUM(pa), 0) + CAST(SUM(CAST(json_extract(raw_json, '$.TB') AS REAL)) AS REAL) / NULLIF(SUM(ab), 0) AS ops
+                    FROM batting GROUP BY season ORDER BY season"""
+            else:
+                query = """SELECT season,
+                    CAST(SUM(er) * 27 AS REAL) / NULLIF(SUM(ip_outs), 0) AS era,
+                    CAST((SUM(CAST(json_extract(raw_json, '$.H') AS REAL)) + SUM(bb)) * 3 AS REAL) / NULLIF(SUM(ip_outs), 0) AS whip,
+                    CAST(SUM(so) * 27 AS REAL) / NULLIF(SUM(ip_outs), 0) AS k_9
+                    FROM pitching GROUP BY season ORDER BY season"""
+            averages = [
+                {"season": int(row["season"]), **{key: round(float(row[key]), 3) for key in row.keys() if key != "season" and row[key] is not None}}
+                for row in connection.execute(query)
+            ]
+        return {"history": rows, "league_averages": averages}
+
     def league_trend(self) -> list[dict[str, Any]]:
         """Return count-weighted league batting and pitching indicators by season."""
         self.initialize()
