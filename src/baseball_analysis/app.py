@@ -43,3 +43,13 @@ def history(kind: str, player_id: str) -> list[dict[str, object]]:
     return database.player_history(table, player_id)
 
 
+@app.get("/api/{kind}/player/{player_id}/analysis")
+def player_analysis(kind: str, player_id: str) -> dict[str, object]:
+    table = {"batters": "batting", "pitchers": "pitching"}.get(kind)
+    if not table:
+        raise HTTPException(404, "Unknown dataset")
+    result = database.player_analysis(table, player_id)
+    if not result["history"]:
+        raise HTTPException(404, "Player not found")
+    return result
+
